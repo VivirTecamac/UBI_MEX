@@ -82,6 +82,7 @@
         <button id="btnGeo" class="btn bg-neon text-black font-bold rounded-2xl glow text-sm">🗺️ GeoJSON</button>
         <button id="btnKml" class="btn bg-card border border-neon text-neon font-bold rounded-2xl text-sm">🌍 KML</button>
       </div>
+      <button id="btnCsv" class="btn w-full bg-card border border-line rounded-2xl text-sm">📄 CSV (coordenadas de las fotos)</button>
       <p id="expMsg" class="text-xs text-center text-gray-500 min-h-[1rem]"></p>
     </div>
 
@@ -416,6 +417,35 @@ $('btnGeo').onclick = () => {
 $('btnKml').onclick = () => {
   if(!terrenosExportables()) return;
   entregar(`terrenos_${hoy()}.kml`, aKML(), 'application/vnd.google-earth.kml+xml');
+};
+
+/* ================= Exportar a CSV (coordenadas de las fotos) ================= */
+function csvCel(v){
+  v = (v==null) ? '' : String(v);
+  return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g,'""') + '"' : v;
+}
+function aCSV(){
+  const cab = ['nombre','notas','fecha_registro'];
+  for(let i=1;i<=4;i++) cab.push(`foto${i}_lat`,`foto${i}_lng`,`foto${i}_precision_m`,`foto${i}_altitud_m`,`foto${i}_fecha_hora`);
+  const filas = S.terrenos.map(t=>{
+    const r = [t.nombre, t.notas||'', new Date(t.ts).toISOString()];
+    for(let i=0;i<4;i++){
+      const f = t.fotos[i];
+      if(f && f.lat!=null){
+        r.push(f.lat.toFixed(6), f.lng.toFixed(6),
+               f.acc!=null ? Math.round(f.acc) : '',
+               f.alt!=null ? Math.round(f.alt) : '',
+               new Date(f.ts).toISOString());
+      } else r.push('','','','','');
+    }
+    return r.map(csvCel).join(',');
+  });
+  return '﻿' + [cab.join(','), ...filas].join('\r\n'); // ﻿ = acentos correctos en Excel
+}
+$('btnCsv').onclick = () => {
+  if(!S.terrenos.length) return expMsg('No hay terrenos para exportar.', true);
+  entregar(`terrenos_${hoy()}.csv`, aCSV(), 'text/csv');
+  expMsg('CSV exportado.');
 };
 
 /* ================= Mapa y ruta ================= */
