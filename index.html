@@ -420,7 +420,7 @@ function aKML(){
     if(t.lat!=null) terr.push(`
       <Placemark>
         <name>${esc(t.nombre)}</name>
-        <description>${esc(t.notas||'')}</description>
+        <description>${esc('Posición de la foto '+(t.fotos.findIndex(f=>f.lat!=null)+1)+(t.notas?' · '+t.notas:''))}</description>
         <ExtendedData>
           ${dato('tipo','terreno')}${dato('id',t.id)}${dato('fecha',new Date(t.ts).toISOString())}
           ${dato('precision_m',t.acc!=null?Math.round(t.acc):'')}${dato('num_fotos',t.fotos.length)}
@@ -430,7 +430,7 @@ function aKML(){
     t.fotos.forEach((f,i)=>{
       if(f.lat!=null) fotos.push(`
       <Placemark>
-        <name>${esc(t.nombre)} - foto ${i+1}</name>
+        <name>${esc(t.nombre)} - foto ${i+1}${f.manual?' ✎':''}</name>
         <TimeStamp><when>${new Date(f.ts).toISOString()}</when></TimeStamp>
         <ExtendedData>
           ${dato('tipo','foto')}${dato('terreno',t.nombre)}${dato('id',t.id)}${dato('foto',i+1)}
@@ -576,30 +576,30 @@ function csvCel(v){
   v = (v==null) ? '' : String(v);
   return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g,'""') + '"' : v;
 }
+// Una fila por foto: terreno, foto, lat, lng, precisión, altitud, fecha y si se ajustó a mano.
 function aCSV(){
-  const cab = ['nombre','notas','fecha_registro'];
-  for(let i=1;i<=4;i++) cab.push(`foto${i}_lat`,`foto${i}_lng`,`foto${i}_precision_m`,`foto${i}_altitud_m`,`foto${i}_fecha_hora`);
-  for(let i=1;i<=4;i++) cab.push(`foto${i}_ajuste_manual`);   // al final, para no mover las demás columnas
-  const filas = S.terrenos.map(t=>{
-    const r = [t.nombre, t.notas||'', new Date(t.ts).toISOString()];
-    for(let i=0;i<4;i++){
-      const f = t.fotos[i];
-      if(f && f.lat!=null){
-        r.push(f.lat.toFixed(6), f.lng.toFixed(6),
-               f.acc!=null ? Math.round(f.acc) : '',
-               f.alt!=null ? Math.round(f.alt) : '',
-               new Date(f.ts).toISOString());
-      } else r.push('','','','','');
-    }
-    for(let i=0;i<4;i++){ const f = t.fotos[i]; r.push(f && f.manual ? 'si' : ''); }
-    return r.map(csvCel).join(',');
+  const cab = ['terreno','foto','lat','lng','precision_m','altitud_m','fecha_hora','ajuste_manual'];
+  const filas = []; let omitidas = 0;
+  S.terrenos.forEach(t=>{
+    t.fotos.forEach((f,i)=>{
+      if(f.lat==null){ omitidas++; return; }
+      filas.push([
+        t.nombre, i+1, f.lat.toFixed(6), f.lng.toFixed(6),
+        f.acc!=null ? Math.round(f.acc) : '',
+        f.alt!=null ? Math.round(f.alt) : '',
+        new Date(f.ts).toISOString(),
+        f.manual ? 'si' : 'no'
+      ].map(csvCel).join(','));
+    });
   });
-  return '﻿' + [cab.join(','), ...filas].join('\r\n'); // ﻿ = acentos correctos en Excel
+  // ﻿ = acentos correctos en Excel
+  return { texto: '﻿' + [cab.join(','), ...filas].join('\r\n'), n: filas.length, omitidas };
 }
 $('btnCsv').onclick = () => {
-  if(!S.terrenos.length) return expMsg('No hay terrenos para exportar.', true);
-  entregar(`terrenos_${hoy()}.csv`, aCSV(), 'text/csv');
-  expMsg('CSV exportado.');
+  const r = aCSV();
+  if(!r.n) return expMsg('No hay fotos con coordenadas para exportar.', true);
+  entregar(`terrenos_${hoy()}.csv`, r.texto, 'text/csv');
+  expMsg(r.omitidas ? `CSV: ${r.n} fotos. Omitidas ${r.omitidas} sin coordenadas.` : `CSV exportado: ${r.n} fotos.`);
 };
 
 /* ================= Mapa y ruta ================= */
