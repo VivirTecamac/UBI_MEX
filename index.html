@@ -31,6 +31,7 @@
   input:focus,textarea:focus,select:focus{border-color:#39ff88}
   #map{height:55vh;border-radius:18px;z-index:0}
   .leaflet-container{background:#0e1410}
+  #adjMap{z-index:0}
   .nav-btn.on{color:#39ff88}
   .nav-btn.on svg{filter:drop-shadow(0 0 6px #39ff88)}
 </style>
@@ -57,6 +58,8 @@
         <span class="text-sm text-gray-400">Fotos: <b id="contFotos" class="text-neon">0</b>/4</span>
         <span class="text-xs text-gray-500">Cada foto guarda su GPS</span>
       </div>
+
+      <div id="gpsLive" class="text-xs rounded-xl bg-bg border border-line px-3 py-2 text-gray-400">📡 Iniciando GPS…</div>
 
       <div id="grid" class="grid grid-cols-2 gap-3"></div>
 
@@ -124,7 +127,24 @@
   <div class="max-w-md w-full space-y-3" onclick="event.stopPropagation()">
     <img id="modalImg" class="w-full rounded-2xl">
     <p id="modalTxt" class="text-xs text-gray-300 bg-card rounded-xl p-3 break-words"></p>
+    <button id="btnAjustar" class="btn w-full bg-neon text-black font-bold rounded-2xl glow">📍 Ajustar posición en el mapa</button>
     <button class="btn w-full bg-card border border-line rounded-2xl" onclick="document.getElementById('modal').classList.add('hidden');document.getElementById('modal').classList.remove('flex')">Cerrar</button>
+  </div>
+</div>
+
+<!-- Ajuste de posición en mapa -->
+<div id="modalMap" class="fixed inset-0 z-50 bg-bg hidden flex-col">
+  <div class="safe-t px-4 py-3 border-b border-line flex items-center justify-between">
+    <h2 class="font-semibold">Ajustar posición de la foto</h2>
+    <button id="adjCerrar" class="text-gray-400 px-3 py-2 text-lg">✕</button>
+  </div>
+  <div id="adjMap" class="flex-1"></div>
+  <div class="safe-b p-3 space-y-2 bg-card border-t border-line">
+    <p id="adjInfo" class="text-xs text-gray-300 min-h-[2.5rem]"></p>
+    <div class="grid grid-cols-2 gap-3">
+      <button id="adjGuardar" class="btn bg-neon text-black font-bold rounded-2xl glow text-sm">✅ Guardar posición</button>
+      <button id="adjRestaurar" class="btn bg-card border border-line rounded-2xl text-sm">↩️ Restaurar GPS</button>
+    </div>
   </div>
 </div>
 
@@ -195,6 +215,8 @@ function go(t){
   if (t==='terrenos') renderLista();
   if (t==='ruta') { fillSelect(); initMap(); setTimeout(()=>map.invalidateSize(),150); }
   if (t==='ajustes') { $('dLat').value=S.destino.lat; $('dLng').value=S.destino.lng; updStore(); }
+  tabActual = t;
+  if (t==='capturar') iniciarWatch(); else detenerWatch();
   window.scrollTo({top:0,behavior:'smooth'});
 }
 
@@ -217,11 +239,19 @@ function setGps(st, acc){
   else if(st==='wait'){ d.textContent='GPS: buscando…'; d.style.color='#facc15'; }
   else { d.textContent='GPS: sin señal'; d.style.color='#f87171'; }
 }
-let posPromise = null;
+let posPromise = null, posCap = null;
 function startCapture(input){
   if (draft.fotos.length >= 4) return say('Máximo 4 fotos por terreno.', true);
-  setGps('wait'); say('Obteniendo ubicación…');
-  posPromise = getPos();           // se toma la posición en el momento de lanzar la cámara
+  // Se toma la mejor posición reciente del GPS en vivo (promedio de las mejores lecturas)
+  posCap = mejorPosicion();
+  if(!posCap){
+    setGps('wait'); say('Aún sin lectura GPS; se intentará al terminar la foto.', true);
+    posPromise = getPos();
+  } else if(posCap.acc > LIMITE_M){
+    say(`⚠️ Precisión baja (±${Math.round(posCap.acc)} m). Puedes corregirla después en el mapa.`, true);
+  } else {
+    say(`📍 Posición fijada (±${Math.round(posCap.acc)} m).`);
+  }
   input.value=''; input.click();
 }
 $('btnCam').onclick = () => startCapture($('fileInput'));
@@ -229,10 +259,13 @@ $('btnGal').onclick = () => startCapture($('fileGallery'));
 [$('fileInput'),$('fileGallery')].forEach(inp => inp.onchange = async e => {
   const f = e.target.files[0]; if(!f) return;
   say('Procesando foto…');
-  const [src, pos] = await Promise.all([shrink(f), posPromise || getPos()]);
+  const [src, pos] = await Promise.all([shrink(f), posCap || posPromise || getPos()]);
+  posCap = null; posPromise = null;
   draft.fotos.push({ src, ...(pos||{lat:null,lng:null,acc:null,alt:null,ts:Date.now()}) });
   renderGrid();
-  say(pos ? '✅ Foto con ubicación guardada.' : '⚠️ Foto añadida sin GPS (permiso denegado o sin señal).', !pos);
+  if(!pos) say('⚠️ Foto añadida sin GPS. Toca la foto para colocarla en el mapa.', true);
+  else if(pos.acc > LIMITE_M) say(`⚠️ Foto guardada con ±${Math.round(pos.acc)} m. Toca la foto para ajustarla en el mapa.`, true);
+  else say(`✅ Foto guardada con ubicación (±${Math.round(pos.acc)} m).`);
 });
 function shrink(file, max=1000, q=.7){
   return new Promise(res => {
@@ -254,16 +287,24 @@ function renderGrid(){
       <img src="${f.src}" class="w-full h-32 object-cover" onclick="verFoto(${i},'draft')">
       <button onclick="quitar(${i})" class="absolute top-1 right-1 bg-black/70 text-red-400 rounded-full w-8 h-8">✕</button>
       <div class="absolute bottom-0 inset-x-0 bg-black/70 text-[10px] px-2 py-1 ${f.lat!=null?'text-neon':'text-yellow-400'}">
-        ${f.lat!=null?`${f.lat.toFixed(5)}, ${f.lng.toFixed(5)}`:'Sin GPS'}</div>
+        ${f.lat!=null?`${f.manual?'✎ ':''}${f.lat.toFixed(5)}, ${f.lng.toFixed(5)}`:'Sin GPS'}</div>
     </div>`).join('');
 }
 window.quitar = i => { draft.fotos.splice(i,1); renderGrid(); };
+let ctx = null; // foto abierta en el visor: {i, from}
+function getFoto(c){ return c.from==='draft' ? draft.fotos[c.i] : S.terrenos.find(t=>t.id===c.from).fotos[c.i]; }
+function recalcTerreno(t){
+  const g = t.fotos.find(f=>f.lat!=null);
+  t.lat = g ? g.lat : null; t.lng = g ? g.lng : null; t.acc = g ? g.acc : null;
+}
 window.verFoto = (i, from) => {
-  const f = from==='draft' ? draft.fotos[i] : S.terrenos.find(t=>t.id===from).fotos[i];
+  ctx = {i, from};
+  const f = getFoto(ctx);
   $('modalImg').src = f.src;
   $('modalTxt').innerHTML = f.lat!=null
-    ? `📍 ${f.lat.toFixed(6)}, ${f.lng.toFixed(6)}<br>Precisión: ±${Math.round(f.acc||0)} m · Altitud: ${f.alt!=null?Math.round(f.alt)+' m':'N/D'}<br>🕒 ${new Date(f.ts).toLocaleString('es-MX')}`
+    ? `📍 ${f.lat.toFixed(6)}, ${f.lng.toFixed(6)}<br>${f.manual?'✎ Ajustada a mano en el mapa':`Precisión: ±${Math.round(f.acc||0)} m`} · Altitud: ${f.alt!=null?Math.round(f.alt)+' m':'N/D'}<br>🕒 ${new Date(f.ts).toLocaleString('es-MX')}`
     : 'Sin datos de ubicación';
+  $('btnAjustar').textContent = f.lat!=null ? '📍 Ajustar posición en el mapa' : '📍 Colocar en el mapa';
   $('modal').classList.remove('hidden'); $('modal').classList.add('flex');
 };
 
@@ -292,7 +333,7 @@ function renderLista(){
         <span class="text-xs ${t.lat!=null?'text-neon':'text-yellow-400'}">${t.lat!=null?'📍 GPS':'sin GPS'}</span>
       </div>
       ${t.notas?`<p class="text-sm text-gray-300">${esc(t.notas)}</p>`:''}
-      ${t.lat!=null?`<p class="text-xs text-gray-400">${t.lat.toFixed(6)}, ${t.lng.toFixed(6)} · ±${Math.round(t.acc||0)} m</p>`:''}
+      ${t.lat!=null?`<p class="text-xs text-gray-400">${t.lat.toFixed(6)}, ${t.lng.toFixed(6)} · ${t.acc!=null?'±'+Math.round(t.acc)+' m':'ajustada a mano'}</p>`:''}
       <div class="grid grid-cols-4 gap-2">${t.fotos.map((f,i)=>`<img src="${f.src}" onclick="verFoto(${i},'${t.id}')" class="h-16 w-full object-cover rounded-xl border border-line">`).join('')}</div>
       <div class="grid grid-cols-3 gap-2 pt-1">
         <button class="btn bg-neon/10 border border-neon text-neon rounded-xl text-sm" onclick="rutaDe('${t.id}')">🧭 Ruta</button>
@@ -358,7 +399,8 @@ function aGeoJSON(){
           tipo:'foto', terreno:t.nombre, id:t.id, foto:i+1,
           fecha:new Date(f.ts).toISOString(),
           precision_m: f.acc!=null ? Math.round(f.acc) : null,
-          altitud_m: f.alt!=null ? Math.round(f.alt) : null
+          altitud_m: f.alt!=null ? Math.round(f.alt) : null,
+          ajuste_manual: f.manual ? 'si' : 'no'
         }
       });
     });
@@ -392,7 +434,7 @@ function aKML(){
         <TimeStamp><when>${new Date(f.ts).toISOString()}</when></TimeStamp>
         <ExtendedData>
           ${dato('tipo','foto')}${dato('terreno',t.nombre)}${dato('id',t.id)}${dato('foto',i+1)}
-          ${dato('precision_m',f.acc!=null?Math.round(f.acc):'')}${dato('altitud_m',f.alt!=null?Math.round(f.alt):'')}
+          ${dato('precision_m',f.acc!=null?Math.round(f.acc):'')}${dato('altitud_m',f.alt!=null?Math.round(f.alt):'')}${dato('ajuste_manual',f.manual?'si':'no')}
         </ExtendedData>
         <Point><coordinates>${f.lng},${f.lat},${f.alt!=null?f.alt:0}</coordinates></Point>
       </Placemark>`);
@@ -419,6 +461,116 @@ $('btnKml').onclick = () => {
   entregar(`terrenos_${hoy()}.kml`, aKML(), 'application/vnd.google-earth.kml+xml');
 };
 
+/* ================= GPS en vivo: mejor lectura ================= */
+const LIMITE_M = 10;        // precisión que se considera buena (metros)
+const VENTANA_MS = 20000;   // se usan las lecturas de los últimos 20 s
+let lecturas = [], watchId = null, gpsError = null, tabActual = 'capturar';
+
+function iniciarWatch(){
+  if(watchId!==null || !navigator.geolocation) return;
+  watchId = navigator.geolocation.watchPosition(p=>{
+    const c = p.coords, ahora = Date.now();
+    gpsError = null;
+    lecturas.push({lat:c.latitude, lng:c.longitude, acc:c.accuracy, alt:c.altitude, t:ahora});
+    lecturas = lecturas.filter(l => ahora - l.t <= VENTANA_MS);
+    pintarGps();
+  }, e => { gpsError = e.code; pintarGps(); },
+  { enableHighAccuracy:true, maximumAge:0, timeout:20000 });
+}
+function detenerWatch(){
+  if(watchId!==null){ navigator.geolocation.clearWatch(watchId); watchId = null; }
+  const d = $('gpsDot'); d.textContent = 'GPS: —'; d.style.color = ''; d.style.borderColor = '';
+}
+// Promedia (ponderado por precisión) las mejores lecturas recientes cercanas a la última.
+function mejorPosicion(){
+  const ahora = Date.now();
+  const R = lecturas.filter(l => ahora - l.t <= VENTANA_MS);
+  if(!R.length) return null;
+  const ancla = R[R.length-1];
+  const tol = Math.max(8, ancla.acc);                       // descarta lecturas de cuando te movías
+  const grupo = R.filter(l => hav(l, ancla)*1000 <= tol);
+  const mejor = Math.min(...grupo.map(l => l.acc));
+  const buenas = grupo.filter(l => l.acc <= Math.max(mejor*1.5, mejor+3));
+  let w = 0, la = 0, ln = 0;
+  buenas.forEach(l => { const a = Math.max(l.acc,1), k = 1/(a*a); w += k; la += l.lat*k; ln += l.lng*k; });
+  const ref = buenas.find(l => l.acc===mejor) || buenas[0];
+  return { lat:la/w, lng:ln/w, acc:mejor, alt:ref.alt, ts:ahora, n:buenas.length };
+}
+function pintarGps(){
+  if(watchId===null) return;
+  const d = $('gpsDot'), b = $('gpsLive'), p = mejorPosicion();
+  let col, dot, msg;
+  if(!p){
+    if(gpsError===1){ col='#f87171'; dot='GPS: sin permiso'; msg='⛔ Permiso de ubicación denegado. Actívalo en los ajustes del navegador.'; }
+    else { col='#facc15'; dot='GPS: buscando…'; msg='📡 Buscando señal GPS…'; }
+  } else {
+    const r = Math.round(p.acc);
+    dot = `GPS ±${r} m`;
+    if(p.acc <= LIMITE_M){ col='#39ff88'; msg=`✅ GPS ±${r} m (${p.n} lecturas) — listo para tomar la foto`; }
+    else if(p.acc <= 25){ col='#facc15'; msg=`⚠️ GPS ±${r} m — precisión baja, espera unos segundos`; }
+    else { col='#f87171'; msg=`⚠️ GPS ±${r} m — muy impreciso; sal a cielo abierto o espera`; }
+  }
+  d.textContent = dot; d.style.color = col; d.style.borderColor = col;
+  b.textContent = msg; b.style.color = col; b.style.borderColor = col;
+}
+
+/* ================= Ajuste manual de la posición en el mapa ================= */
+let adjMap = null, adjMarker = null, adjCircle = null, adjOrig = null;
+const iconoPin = c => L.divIcon({className:'',html:`<div style="width:22px;height:22px;border-radius:50%;background:${c};border:3px solid #0b0f0c;box-shadow:0 0 14px ${c}"></div>`,iconSize:[22,22],iconAnchor:[11,11]});
+function cerrarModalFoto(){ $('modal').classList.add('hidden'); $('modal').classList.remove('flex'); }
+function cerrarAdj(){ $('modalMap').classList.add('hidden'); $('modalMap').classList.remove('flex'); }
+function actualizarAdj(){
+  const p = adjMarker.getLatLng();
+  let txt = `📍 ${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}`;
+  txt += adjOrig ? ` · a ${Math.round(hav(adjOrig,{lat:p.lat,lng:p.lng})*1000)} m del GPS`
+                 : ' · esta foto no tiene lectura GPS';
+  $('adjInfo').innerHTML = txt + '<br>Toca el mapa o arrastra el punto hasta el lugar exacto.';
+}
+$('btnAjustar').onclick = () => {
+  const f = getFoto(ctx);
+  cerrarModalFoto();
+  $('modalMap').classList.remove('hidden'); $('modalMap').classList.add('flex');
+  if(!adjMap){
+    adjMap = L.map('adjMap',{zoomControl:true});
+    const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:20,maxNativeZoom:19,attribution:'Imagen © Esri'});
+    const calles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:20,maxNativeZoom:19,attribution:'© OpenStreetMap'});
+    sat.addTo(adjMap);
+    L.control.layers({'Satélite':sat,'Calles':calles}).addTo(adjMap);
+    adjMap.on('click', e => { adjMarker.setLatLng(e.latlng); actualizarAdj(); });
+  }
+  const o = f.manual ? {lat:f.lat0, lng:f.lng0, acc:f.acc0} : {lat:f.lat, lng:f.lng, acc:f.acc};
+  adjOrig = o.lat!=null ? o : null;                       // lectura original del GPS
+  const tiene = f.lat!=null;
+  const ll = tiene ? [f.lat,f.lng] : [S.destino.lat,S.destino.lng];
+  if(adjMarker){ adjMap.removeLayer(adjMarker); adjMarker = null; }
+  if(adjCircle){ adjMap.removeLayer(adjCircle); adjCircle = null; }
+  adjMarker = L.marker(ll,{draggable:true,icon:iconoPin('#39ff88')}).addTo(adjMap);
+  adjMarker.on('drag dragend', actualizarAdj);
+  if(adjOrig && adjOrig.acc!=null) adjCircle = L.circle([adjOrig.lat,adjOrig.lng],{radius:adjOrig.acc,color:'#facc15',weight:1,fillOpacity:.1}).addTo(adjMap);
+  setTimeout(()=>{ adjMap.invalidateSize(); adjMap.setView(ll, tiene?19:13); actualizarAdj(); }, 120);
+};
+function finAjuste(){
+  if(ctx.from==='draft') renderGrid();
+  else { const t = S.terrenos.find(x=>x.id===ctx.from); recalcTerreno(t); save(); renderLista(); }
+  cerrarAdj();
+  say('✎ Posición actualizada.');
+}
+$('adjGuardar').onclick = () => {
+  const f = getFoto(ctx), p = adjMarker.getLatLng();
+  if(!f.manual){ f.lat0 = f.lat; f.lng0 = f.lng; f.acc0 = f.acc; }   // se conserva la lectura original
+  f.lat = p.lat; f.lng = p.lng; f.acc = null; f.manual = true;
+  finAjuste();
+};
+$('adjRestaurar').onclick = () => {
+  const f = getFoto(ctx);
+  if(f.manual){
+    f.lat = f.lat0 ?? null; f.lng = f.lng0 ?? null; f.acc = f.acc0 ?? null;
+    delete f.manual; delete f.lat0; delete f.lng0; delete f.acc0;
+    finAjuste();
+  } else if(adjOrig){ adjMarker.setLatLng([adjOrig.lat,adjOrig.lng]); actualizarAdj(); }
+};
+$('adjCerrar').onclick = cerrarAdj;
+
 /* ================= Exportar a CSV (coordenadas de las fotos) ================= */
 function csvCel(v){
   v = (v==null) ? '' : String(v);
@@ -427,6 +579,7 @@ function csvCel(v){
 function aCSV(){
   const cab = ['nombre','notas','fecha_registro'];
   for(let i=1;i<=4;i++) cab.push(`foto${i}_lat`,`foto${i}_lng`,`foto${i}_precision_m`,`foto${i}_altitud_m`,`foto${i}_fecha_hora`);
+  for(let i=1;i<=4;i++) cab.push(`foto${i}_ajuste_manual`);   // al final, para no mover las demás columnas
   const filas = S.terrenos.map(t=>{
     const r = [t.nombre, t.notas||'', new Date(t.ts).toISOString()];
     for(let i=0;i<4;i++){
@@ -438,6 +591,7 @@ function aCSV(){
                new Date(f.ts).toISOString());
       } else r.push('','','','','');
     }
+    for(let i=0;i<4;i++){ const f = t.fotos[i]; r.push(f && f.manual ? 'si' : ''); }
     return r.map(csvCel).join(',');
   });
   return '﻿' + [cab.join(','), ...filas].join('\r\n'); // ﻿ = acentos correctos en Excel
@@ -515,6 +669,10 @@ $('btnBorrar').onclick = () => { if(confirm('Se borrarán TODOS los terrenos. ¿
 
 /* Inicio */
 renderGrid(); updStore();
+iniciarWatch(); pintarGps(); setInterval(pintarGps, 2000);
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState==='visible' && tabActual==='capturar'){ detenerWatch(); iniciarWatch(); }
+});
 </script>
 </body>
 </html>
