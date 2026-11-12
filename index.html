@@ -241,7 +241,7 @@ function setGps(st, acc){
 }
 let posPromise = null, posCap = null;
 function startCapture(input){
-  if (draft.fotos.length >= 4) return say('Máximo 4 fotos por terreno.', true);
+  if (draft.fotos.length >= 120) return say('Máximo 120 fotos por terreno.', true);
   // Se toma la mejor posición reciente del GPS en vivo (promedio de las mejores lecturas)
   posCap = mejorPosicion();
   if(!posCap){
